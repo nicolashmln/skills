@@ -1,0 +1,12 @@
+{
+  "title": "Tableau de bord",
+  "welcome": "Bienvenue, {name}",
+  "stats": {
+    "users": "aucun utilisateur | un utilisateur | {count} utilisateurs",
+    "revenue": "Revenu : {amount}"
+  },
+  "buttons": {
+    "save": "Enregistrer",
+    "cancel": "Annuler"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "greeting": "Hello {name}, welcome back!",
+  "cart": {
+    "items": "no items | one item | {count} items",
+    "total": "Total: {amount}",
+    "checkout_link": "Click <a href=\"/checkout\" class=\"btn\">here</a> to check out"
+  },
+  "footer": {
+    "see_home": "See @:nav.home for more",
+    "made_by": "Made with ♥ by Acme Corp",
+    "contact": "Email us at support@acme.com"
+  },
+  "nav": {
+    "home": "Home",
+    "about": "About"
+  },
+  "errors": {
+    "required": "{field} is required",
+    "min_length": "{field} must be at least {min} characters | {field} must be at least one character | {field} must be at least {min} characters"
+  }
+}

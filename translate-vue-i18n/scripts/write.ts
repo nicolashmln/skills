@@ -1,0 +1,184 @@
+#!/usr/bin/env node
+import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+
+interface Args {
+  cwd: string;
+}
+
+type JsonValue = string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue };
+type JsonObject = { [k: string]: JsonValue };
+
+function parseArgs(): Args {
+  const args: Args = { cwd: process.cwd() };
+  for (let i = 2; i < process.argv.length; i++) {
+    const a = process.argv[i];
+    if (a === '--cwd') args.cwd = process.argv[++i];
+    else throw new Error(`Unknown argument: ${a}`);
+  }
+  return args;
+}
+
+async function findLocalesRoot(cwd: string): Promise<string> {
+  for (const c of ['i18n/locales', 'locales']) {
+    const p = join(cwd, c);
+    if (existsSync(p)) return p;
+  }
+  throw new Error(`Could not find locales folder. Looked for 'i18n/locales' and 'locales' under ${cwd}.`);
+}
+
+async function readJson(path: string): Promise<JsonObject> {
+  if (!existsSync(path)) return {};
+  const text = await readFile(path, 'utf8');
+  if (!text.trim()) return {};
+  return JSON.parse(text);
+}
+
+async function readArrayMeta(path: string): Promise<string[]> {
+  if (!existsSync(path)) return [];
+  const text = await readFile(path, 'utf8');
+  if (!text.trim()) return [];
+  const v = JSON.parse(text);
+  return Array.isArray(v) ? v : [];
+}
+
+function mergeDeep(target: JsonValue | undefined, source: JsonValue): JsonValue {
+  if (source === null || typeof source !== 'object' || Array.isArray(source)) return source;
+  const base: JsonObject = (target !== null && typeof target === 'object' && !Array.isArray(target))
+    ? { ...(target as JsonObject) }
+    : {};
+  for (const [k, v] of Object.entries(source)) {
+    base[k] = mergeDeep(base[k], v);
+  }
+  return base;
+}
+
+// Walks a nested object and yields every dotted-path leaf string.
+function* walkLeafPaths(obj: JsonValue, prefix = ''): Generator<{ path: string; value: string }> {
+  if (typeof obj === 'string') {
+    yield { path: prefix, value: obj };
+    return;
+  }
+  if (obj !== null && typeof obj === 'object' && !Array.isArray(obj)) {
+    for (const [k, v] of Object.entries(obj)) {
+      yield* walkLeafPaths(v, prefix ? `${prefix}.${k}` : k);
+    }
+  }
+}
+
+function findUntranslated(source: JsonValue | undefined, translations: JsonValue, path = ''): string[] {
+  const out: string[] = [];
+  if (typeof translations === 'string') {
+    if (typeof source === 'string' && source === translations) out.push(path);
+    return out;
+  }
+  if (translations !== null && typeof translations === 'object' && !Array.isArray(translations)) {
+    const src = (source !== null && typeof source === 'object' && !Array.isArray(source))
+      ? (source as JsonObject)
+      : {};
+    for (const [k, v] of Object.entries(translations)) {
+      const p = path ? `${path}.${k}` : k;
+      out.push(...findUntranslated(src[k], v, p));
+    }
+  }
+  return out;
+}
+
+function countLeaves(v: JsonValue): number {
+  if (typeof v === 'string') return 1;
+  if (Array.isArray(v)) return 1;
+  if (typeof v === 'object' && v !== null) {
+    return Object.values(v).reduce((acc: number, x) => acc + countLeaves(x), 0);
+  }
+  return 1;
+}
+
+async function main() {
+  const args = parseArgs();
+  const localesRoot = await findLocalesRoot(args.cwd);
+  const metadataDir = join(localesRoot, '.metadata');
+  const pendingPath = join(metadataDir, '.pending.json');
+
+  if (!existsSync(pendingPath)) {
+    throw new Error(`No pending translations found at ${pendingPath}. Run extract.ts first.`);
+  }
+
+  const pending = await readJson(pendingPath) as {
+    sourceLang?: string;
+    languages?: { [lang: string]: { [file: string]: JsonValue } };
+  };
+
+  const sourceLang = pending.sourceLang;
+  if (!sourceLang) throw new Error(`Pending file is missing 'sourceLang'.`);
+  const sourceDir = join(localesRoot, sourceLang);
+
+  const translatedPath = join(metadataDir, 'translated.json');
+  const translatedLangsPath = join(metadataDir, 'translated-langs.json');
+  const translated = new Set(await readArrayMeta(translatedPath));
+  const translatedLangs = new Set(await readArrayMeta(translatedLangsPath));
+
+  let writtenFiles = 0;
+  let writtenKeys = 0;
+  const warnings: string[] = [];
+  const summary: { lang: string; file: string; keys: number }[] = [];
+
+  for (const [lang, files] of Object.entries(pending.languages ?? {})) {
+    const targetDir = join(localesRoot, lang);
+    await mkdir(targetDir, { recursive: true });
+
+    for (const [file, translations] of Object.entries(files)) {
+      const sourceContent = await readJson(join(sourceDir, file));
+      const untranslated = findUntranslated(sourceContent, translations);
+      if (untranslated.length > 0) {
+        warnings.push(`${lang}/${file}: ${untranslated.length} key(s) match the source verbatim:`);
+        for (const k of untranslated.slice(0, 10)) warnings.push(`    - ${k}`);
+        if (untranslated.length > 10) warnings.push(`    ... and ${untranslated.length - 10} more`);
+      }
+
+      const targetPath = join(targetDir, file);
+      await mkdir(dirname(targetPath), { recursive: true });
+      const existing = await readJson(targetPath);
+      const merged = mergeDeep(existing, translations);
+      await writeFile(targetPath, JSON.stringify(merged, null, 2) + '\n');
+
+      // Record every translated leaf path in the shared `translated` set.
+      for (const { path } of walkLeafPaths(translations)) {
+        translated.add(path);
+      }
+
+      const n = countLeaves(translations);
+      writtenFiles++;
+      writtenKeys += n;
+      summary.push({ lang, file, keys: n });
+    }
+
+    translatedLangs.add(lang);
+  }
+
+  await writeFile(
+    translatedPath,
+    JSON.stringify([...translated].sort(), null, 2) + '\n',
+  );
+  await writeFile(
+    translatedLangsPath,
+    JSON.stringify([...translatedLangs].sort(), null, 2) + '\n',
+  );
+  await unlink(pendingPath);
+
+  console.log(`Wrote ${writtenKeys} key(s) across ${writtenFiles} file(s):`);
+  for (const s of summary) console.log(`  ${s.lang}/${s.file}: ${s.keys}`);
+  console.log(`Updated ${translatedPath} (${translated.size} keys total).`);
+  console.log(`Updated ${translatedLangsPath} ([${[...translatedLangs].sort().join(', ')}]).`);
+  console.log(`Removed ${pendingPath}.`);
+
+  if (warnings.length > 0) {
+    console.log('\nWarnings:');
+    for (const w of warnings) console.log(`  ${w}`);
+  }
+}
+
+main().catch(err => {
+  console.error(`Error: ${err.message}`);
+  process.exit(1);
+});

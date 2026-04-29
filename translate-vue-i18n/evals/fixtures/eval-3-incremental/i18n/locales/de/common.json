@@ -1,0 +1,12 @@
+{
+  "title": "Übersicht",
+  "welcome": "Willkommen, {name}",
+  "stats": {
+    "users": "keine Benutzer | ein Benutzer | {count} Benutzer",
+    "revenue": "Umsatz: {amount}"
+  },
+  "buttons": {
+    "save": "Speichern",
+    "cancel": "Abbrechen"
+  }
+}

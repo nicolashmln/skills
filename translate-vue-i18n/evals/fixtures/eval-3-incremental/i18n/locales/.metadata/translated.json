@@ -1,0 +1,11 @@
+[
+  "buttons.cancel",
+  "buttons.save",
+  "errors.invalid_credentials",
+  "login",
+  "logout",
+  "stats.revenue",
+  "stats.users",
+  "title",
+  "welcome"
+]

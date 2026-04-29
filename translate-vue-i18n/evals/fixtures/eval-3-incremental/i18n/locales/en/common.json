@@ -1,0 +1,15 @@
+{
+  "title": "Dashboard",
+  "welcome": "Welcome, {name}",
+  "stats": {
+    "users": "no users | one user | {count} users",
+    "revenue": "Revenue: {amount}",
+    "growth": "Growth this month",
+    "trending": "Trending up by {percent}%"
+  },
+  "buttons": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "export": "Export to CSV"
+  }
+}
