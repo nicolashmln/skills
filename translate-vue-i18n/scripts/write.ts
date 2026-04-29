@@ -104,7 +104,8 @@ async function main() {
     throw new Error(`No pending translations found at ${pendingPath}. Run extract.ts first.`);
   }
 
-  const pending = await readJson(pendingPath) as {
+  const pendingText = await readFile(pendingPath, 'utf8');
+  const pending = JSON.parse(pendingText) as {
     sourceLang?: string;
     languages?: { [lang: string]: { [file: string]: JsonValue } };
   };
@@ -166,11 +167,18 @@ async function main() {
   );
   await unlink(pendingPath);
 
+  // Rough token estimate: the agent reads the pending file as input and rewrites it
+  // with translated values, so total content ≈ pending-file size × 2. The conventional
+  // ratio of ~4 chars/token gives a usable lower bound; it doesn't include the skill's
+  // own prompt overhead, which adds maybe a few hundred tokens.
+  const estimatedTokens = Math.round((pendingText.length * 2) / 4);
+
   console.log(`Wrote ${writtenKeys} key(s) across ${writtenFiles} file(s):`);
   for (const s of summary) console.log(`  ${s.lang}/${s.file}: ${s.keys}`);
   console.log(`Updated ${translatedPath} (${translated.size} keys total).`);
   console.log(`Updated ${translatedLangsPath} ([${[...translatedLangs].sort().join(', ')}]).`);
   console.log(`Removed ${pendingPath}.`);
+  console.log(`Estimated tokens used for translation: ~${estimatedTokens.toLocaleString()} (rough; based on translated content, excludes skill prompt overhead).`);
 
   if (warnings.length > 0) {
     console.log('\nWarnings:');

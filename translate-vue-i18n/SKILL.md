@@ -109,6 +109,7 @@ Note: the metadata does **not** track when a source value changes. If the Englis
 After `write.ts` finishes, summarize briefly:
 - How many keys were translated, into which languages, in which files.
 - Any warnings the writer printed.
+- The estimated token count from the writer's last line (`Estimated tokens used for translation: ~X`). Pass it through verbatim so the user can roughly gauge cost; the script labels it as a rough estimate, so don't dress it up.
 - That `.metadata/` now tracks what's been translated, so subsequent runs are incremental.
 
 ## Notes
