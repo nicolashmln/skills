@@ -43,12 +43,15 @@ The skill follows a three-step workflow under the hood:
 
 ## Metadata
 
-The skill keeps two files in `<locales-root>/.metadata/`:
+The skill keeps three files in `<locales-root>/.metadata/`:
 
 - `translated.json` — flat array of dotted key paths that have been translated, e.g. `["nav.home", "errors.email_taken"]`.
 - `translated-langs.json` — array of language codes already processed, e.g. `["fr", "es"]`.
+- `hashes.json` — flat key/value map of dotted key paths to the SHA-1 of the source value at translation time, e.g. `{"nav.home": "70f8bb..."}`. Extract uses this to detect when the source English text has changed and re-queue those keys.
 
-A key is considered done once it lands in `translated.json`. To re-translate a key whose source value changed, either delete it from `translated.json` or pass `--force` to extract.
+A key whose source value matches its stored hash is skipped on the next extract. If the source English text changes, extract picks it up automatically; pass `--force` to ignore all metadata and re-translate everything.
+
+Upgrading from a version of this skill without `hashes.json`? On the first run, extract silently backfills hashes for keys already in `translated.json` so existing translations aren't re-queued.
 
 ## Vue i18n syntax preserved
 

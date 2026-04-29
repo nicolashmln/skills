@@ -2,6 +2,7 @@
 import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 
 interface Args {
   cwd: string;
@@ -41,6 +42,27 @@ async function readArrayMeta(path: string): Promise<string[]> {
   if (!text.trim()) return [];
   const v = JSON.parse(text);
   return Array.isArray(v) ? v : [];
+}
+
+async function readObjectMeta(path: string): Promise<{ [k: string]: string }> {
+  if (!existsSync(path)) return {};
+  const text = await readFile(path, 'utf8');
+  if (!text.trim()) return {};
+  const v = JSON.parse(text);
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? v : {};
+}
+
+function sha1(s: string): string {
+  return createHash('sha1').update(s).digest('hex');
+}
+
+function getByPath(obj: JsonValue | undefined, dottedPath: string): JsonValue | undefined {
+  let cur: JsonValue | undefined = obj;
+  for (const part of dottedPath.split('.')) {
+    if (cur === null || typeof cur !== 'object' || Array.isArray(cur)) return undefined;
+    cur = (cur as JsonObject)[part];
+  }
+  return cur;
 }
 
 function mergeDeep(target: JsonValue | undefined, source: JsonValue): JsonValue {
@@ -116,8 +138,10 @@ async function main() {
 
   const translatedPath = join(metadataDir, 'translated.json');
   const translatedLangsPath = join(metadataDir, 'translated-langs.json');
+  const hashesPath = join(metadataDir, 'hashes.json');
   const translated = new Set(await readArrayMeta(translatedPath));
   const translatedLangs = new Set(await readArrayMeta(translatedLangsPath));
+  const hashes: { [k: string]: string } = await readObjectMeta(hashesPath);
 
   let writtenFiles = 0;
   let writtenKeys = 0;
@@ -143,9 +167,15 @@ async function main() {
       const merged = mergeDeep(existing, translations);
       await writeFile(targetPath, JSON.stringify(merged, null, 2) + '\n');
 
-      // Record every translated leaf path in the shared `translated` set.
+      // Record every translated leaf path in the shared `translated` set, and
+      // store the SHA-1 of the corresponding source value so future extracts can
+      // detect when the source text changes.
       for (const { path } of walkLeafPaths(translations)) {
         translated.add(path);
+        const sourceVal = getByPath(sourceContent, path);
+        if (typeof sourceVal === 'string') {
+          hashes[path] = sha1(sourceVal);
+        }
       }
 
       const n = countLeaves(translations);
@@ -165,6 +195,10 @@ async function main() {
     translatedLangsPath,
     JSON.stringify([...translatedLangs].sort(), null, 2) + '\n',
   );
+  const sortedHashes = Object.fromEntries(
+    Object.entries(hashes).sort(([a], [b]) => a.localeCompare(b)),
+  );
+  await writeFile(hashesPath, JSON.stringify(sortedHashes, null, 2) + '\n');
   await unlink(pendingPath);
 
   // Rough token estimate: the agent reads the pending file as input and rewrites it
@@ -177,6 +211,7 @@ async function main() {
   for (const s of summary) console.log(`  ${s.lang}/${s.file}: ${s.keys}`);
   console.log(`Updated ${translatedPath} (${translated.size} keys total).`);
   console.log(`Updated ${translatedLangsPath} ([${[...translatedLangs].sort().join(', ')}]).`);
+  console.log(`Updated ${hashesPath} (${Object.keys(hashes).length} hashes total).`);
   console.log(`Removed ${pendingPath}.`);
   console.log(`Estimated tokens used for translation: ~${estimatedTokens.toLocaleString()} (rough; based on translated content, excludes skill prompt overhead).`);
 

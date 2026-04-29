@@ -5,7 +5,7 @@
       "id": 1,
       "name": "fresh-no-config",
       "prompt": "I have a Vue project with English locale files in `locales/en/`. There's no i18n config file yet — I'll set that up later. Please translate everything to French and Spanish so I have `locales/fr/` and `locales/es/` populated.",
-      "expected_output": "Two new folders `locales/fr/` and `locales/es/` are created, each containing a `common.json` file with translations of every key from the English source. Nested structure (app, nav, actions, messages) is preserved. A `.metadata/` folder is created at the locales root with `translated.json` (every translated dotted key path) and `translated-langs.json` (`[\"es\", \"fr\"]`).",
+      "expected_output": "Two new folders `locales/fr/` and `locales/es/` are created, each containing a `common.json` file with translations of every key from the English source. Nested structure (app, nav, actions, messages) is preserved. A `.metadata/` folder is created at the locales root with `translated.json` (every translated dotted key path), `translated-langs.json` (`[\"es\", \"fr\"]`), and `hashes.json` (one SHA-1 hash per source key path).",
       "fixture": "fixtures/eval-1-fresh-no-config",
       "assertions": []
     },
@@ -21,7 +21,7 @@
       "id": 3,
       "name": "incremental",
       "prompt": "I added some new keys to my English locale files. Can you translate them to the other locales? The Nuxt config has the languages configured.",
-      "expected_output": "Only the new keys (stats.growth, stats.trending, buttons.export in common.json; signup, errors.email_taken in auth.json) are added to fr/ and de/ files. Existing translations in fr/ and de/ are not modified. The `.metadata/translated.json` array is extended with the new dotted key paths (preserving the existing entries) and `.metadata/translated-langs.json` still contains `[\"de\", \"fr\"]`. The `{percent}` and `{email}` interpolation variables are preserved in their translations.",
+      "expected_output": "Only the new keys (stats.growth, stats.trending, buttons.export in common.json; signup, errors.email_taken in auth.json) are added to fr/ and de/ files. Existing translations in fr/ and de/ are not modified. `.metadata/translated.json` is extended with the new dotted key paths (preserving the existing entries) and `.metadata/translated-langs.json` still contains `[\"de\", \"fr\"]`. `.metadata/hashes.json` is created (it wasn't in the seed fixture): it gets a silent backfill of hashes for the previously translated keys plus new entries for the keys translated this run — none of the previously translated keys are re-queued. The `{percent}` and `{email}` interpolation variables are preserved in their translations.",
       "fixture": "fixtures/eval-3-incremental",
       "assertions": []
     }

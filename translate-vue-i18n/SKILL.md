@@ -31,9 +31,12 @@ What the script does:
 1. **Locates the locales root** by checking, in order: `i18n/locales/`, then `locales/`.
 2. **Detects languages** from `i18n/i18n.config.ts` or `nuxt.config.ts` (looks for `defaultLocale` and `locales`). Falls back to subfolder names if neither config exists; defaults source to `en` if present.
 3. **Walks JSON files** recursively under the source-language folder.
-4. **Diffs** against `<locales-root>/.metadata/translated.json` and `<locales-root>/.metadata/translated-langs.json`:
-   - If a target language is **not** in `translated-langs.json`, every source key is queued for that language (fresh language).
-   - If a target language **is** in `translated-langs.json`, only source keys absent from `translated.json` are queued for that language.
+4. **Diffs** against `<locales-root>/.metadata/translated.json`, `translated-langs.json`, and `hashes.json`. For each source key it walks this decision tree:
+   - If the target language is **not** in `translated-langs.json` → queue (fresh language gets every key).
+   - Else if the key is **not** in `translated.json` → queue (brand-new key).
+   - Else if the key is **not** in `hashes.json` → silently backfill `hashes[key] = sha1(sourceValue)` and **do not queue** (migration path for projects that pre-date hash tracking).
+   - Else if `hashes[key]` differs from the current source's SHA-1 → queue (source text changed since last translation).
+   - Else → skip.
 5. **Writes** a pending file to `<locales-root>/.metadata/.pending.json`:
 
 ```json
@@ -97,12 +100,13 @@ What the script does:
 3. **Updates** the metadata:
    - Adds every translated dotted key path to `<locales-root>/.metadata/translated.json` (a sorted JSON array of strings like `"nav.home"`, `"errors.email_taken"`).
    - Adds each target language to `<locales-root>/.metadata/translated-langs.json` (a sorted JSON array like `["de", "fr"]`).
+   - Records `path → sha1(sourceValue)` in `<locales-root>/.metadata/hashes.json` (a sorted flat object) so future extracts can detect source-text changes and re-queue stale translations.
 4. **Warns** if any translated value is byte-identical to the source (often a missed translation; sometimes legitimate, e.g. proper names like "Vue").
 5. **Deletes** the pending file.
 
 Implication: the skill assumes Vue i18n's convention that all locale files in a folder share one global namespace, so dotted key paths are unique across files. If the same dotted path appears in two source files and only one is translated, the path will be marked translated and the second file will not be retranslated for that key. In practice, projects don't duplicate keys across files.
 
-Note: the metadata does **not** track when a source value changes. If the English text for a key changes after it's been translated, the skill will not re-translate it. To force a re-translation, pass `--force` to extract, or remove the relevant entry from `translated.json` by hand.
+Upgrade note: projects upgrading from a previous version of this skill that don't yet have `hashes.json` will see it appear on the next extract run, populated with hashes for the keys already in `translated.json`. No keys are re-translated as part of the upgrade — it's pure backfill, and the script logs a `Backfilled N hash(es)` line so the action is visible.
 
 ## Reporting back to the user
 

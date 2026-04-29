@@ -2,6 +2,7 @@
 import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 interface Args {
   cwd: string;
@@ -139,6 +140,18 @@ async function readArrayMeta(path: string): Promise<string[]> {
   return Array.isArray(v) ? v : [];
 }
 
+async function readObjectMeta(path: string): Promise<{ [k: string]: string }> {
+  if (!existsSync(path)) return {};
+  const text = await readFile(path, 'utf8');
+  if (!text.trim()) return {};
+  const v = JSON.parse(text);
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? v : {};
+}
+
+function sha1(s: string): string {
+  return createHash('sha1').update(s).digest('hex');
+}
+
 // Walks the source tree and returns a flat map of dotted-path => leaf value (strings only).
 function flattenStrings(obj: JsonValue, prefix = '', out: { [k: string]: string } = {}): { [k: string]: string } {
   if (typeof obj === 'string') {
@@ -200,8 +213,10 @@ async function main() {
 
   const translatedPath = join(metadataDir, 'translated.json');
   const translatedLangsPath = join(metadataDir, 'translated-langs.json');
+  const hashesPath = join(metadataDir, 'hashes.json');
   const translated = args.force ? new Set<string>() : new Set(await readArrayMeta(translatedPath));
   const translatedLangs = args.force ? new Set<string>() : new Set(await readArrayMeta(translatedLangsPath));
+  const hashes: { [k: string]: string } = args.force ? {} : await readObjectMeta(hashesPath);
 
   // Build a single flat map of {dotted-path: source-value} across all source files,
   // grouped by file so we can reconstruct nested per-file pending output.
@@ -217,6 +232,7 @@ async function main() {
   };
 
   let totalKeys = 0;
+  let backfilled = 0;
 
   for (const lang of targets) {
     const isFreshLang = !translatedLangs.has(lang);
@@ -225,11 +241,25 @@ async function main() {
     for (const [file, flatSource] of Object.entries(sourceByFile)) {
       const filePending: { [path: string]: string } = {};
       for (const [path, val] of Object.entries(flatSource)) {
-        // A key is pending for this lang iff: this lang is fresh, OR the key has
-        // never been translated yet (not in translated.json).
-        if (isFreshLang || !translated.has(path)) {
+        const sourceHash = sha1(val);
+        if (isFreshLang) {
+          // Fresh language: translate everything regardless of metadata. write.ts
+          // will record the source hash when the translation lands.
+          filePending[path] = val;
+        } else if (!translated.has(path)) {
+          // Brand-new key.
+          filePending[path] = val;
+        } else if (!(path in hashes)) {
+          // Key was translated by a previous version of the skill that didn't track
+          // hashes. Backfill silently — assume the existing translation matches the
+          // current source.
+          hashes[path] = sourceHash;
+          backfilled++;
+        } else if (hashes[path] !== sourceHash) {
+          // Source value changed since last translation — re-queue.
           filePending[path] = val;
         }
+        // else: already translated and unchanged. Skip.
       }
       if (Object.keys(filePending).length > 0) {
         langPending[file] = unflattenPaths(filePending);
@@ -245,8 +275,22 @@ async function main() {
   const pendingPath = join(metadataDir, '.pending.json');
   await writeFile(pendingPath, JSON.stringify(pending, null, 2) + '\n');
 
+  // Backfilled hashes need to be persisted even when nothing was queued, so that
+  // the next run sees up-to-date metadata. write.ts will overwrite this file with
+  // its own additions for any keys that get translated this round; backfills are
+  // disjoint from those (they come from already-translated keys), so no conflict.
+  if (backfilled > 0 || args.force) {
+    const sortedHashes = Object.fromEntries(
+      Object.entries(hashes).sort(([a], [b]) => a.localeCompare(b)),
+    );
+    await writeFile(hashesPath, JSON.stringify(sortedHashes, null, 2) + '\n');
+  }
+
   console.log(`\nWrote ${pendingPath}`);
   console.log(`Total keys to translate: ${totalKeys}`);
+  if (backfilled > 0) {
+    console.log(`Backfilled ${backfilled} hash(es) for previously translated keys (no re-translation queued).`);
+  }
   if (totalKeys === 0) {
     console.log('Nothing to translate.');
   }
