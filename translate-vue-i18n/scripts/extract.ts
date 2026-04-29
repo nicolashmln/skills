@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, readdir, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -273,7 +273,13 @@ async function main() {
   }
 
   const pendingPath = join(metadataDir, '.pending.json');
-  await writeFile(pendingPath, JSON.stringify(pending, null, 2) + '\n');
+  if (totalKeys > 0) {
+    await writeFile(pendingPath, JSON.stringify(pending, null, 2) + '\n');
+  } else if (existsSync(pendingPath)) {
+    // Nothing to translate — clear any stale pending file from a previous run so
+    // write.ts can't accidentally process empty leftovers.
+    await unlink(pendingPath);
+  }
 
   // Backfilled hashes need to be persisted even when nothing was queued, so that
   // the next run sees up-to-date metadata. write.ts will overwrite this file with
@@ -286,7 +292,10 @@ async function main() {
     await writeFile(hashesPath, JSON.stringify(sortedHashes, null, 2) + '\n');
   }
 
-  console.log(`\nWrote ${pendingPath}`);
+  console.log();
+  if (totalKeys > 0) {
+    console.log(`Wrote ${pendingPath}`);
+  }
   console.log(`Total keys to translate: ${totalKeys}`);
   if (backfilled > 0) {
     console.log(`Backfilled ${backfilled} hash(es) for previously translated keys (no re-translation queued).`);
