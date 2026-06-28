@@ -1,0 +1,29 @@
+{
+  "skill_name": "translate-vue-i18n-markdown",
+  "evals": [
+    {
+      "id": 1,
+      "name": "fresh-language",
+      "prompt": "I have a Nuxt Content site with English markdown pages in `content/en/`. Please translate them all to French so I get a `content/fr/` folder.",
+      "expected_output": "A new `content/fr/` folder is created, mirroring the source structure: `content/fr/index.md` and `content/fr/blog/post-1.md`. Frontmatter `title` and `description` values are translated to French while the keys and structural fields (`navigation: true`, `date: 2026-01-15`, `draft: false`) are preserved. Markdown body prose, headings, and list items are translated. The link `[installation guide](/docs/install)` keeps its `/docs/install` URL with only the link text translated. A `content/.metadata/` folder is created with `translated.json` (`[\"blog/post-1.md\", \"index.md\"]`), `translated-langs.json` (`[\"fr\"]`), and `hashes.json` (one SHA-1 per source file path).",
+      "fixture": "fixtures/eval-1-fresh",
+      "assertions": []
+    },
+    {
+      "id": 2,
+      "name": "markdown-preservation",
+      "prompt": "Translate my Nuxt Content pages to French.",
+      "expected_output": "`content/fr/getting-started.md` is created. Translated: frontmatter `title` and `description`, the headings and prose, and the `[API reference](/docs/api)` link text. Preserved byte-for-byte: the fenced ```ts code block (imports, `createClient`, `process.env.API_KEY`), inline code `createClient`, the `/docs/api` URL, the frontmatter keys and structural values (`draft: false`, `layout: docs`), and the MDC component `::callout{icon=\"i-heroicons-light-bulb\" color=\"amber\"}` — its name, `icon`, and `color` props stay identical while the callout body text is translated. The closing `::` is kept.",
+      "fixture": "fixtures/eval-2-markdown-preservation",
+      "assertions": []
+    },
+    {
+      "id": 3,
+      "name": "incremental",
+      "prompt": "I changed the user guide and added a changelog page to my English content. Can you sync the French and German translations? The Nuxt config has the languages.",
+      "expected_output": "Only the changed page (`guide.md`, whose stored hash no longer matches) and the new page (`changelog.md`, not yet in `translated.json`) are queued — `index.md` is skipped because its hash still matches. New files `content/fr/changelog.md` and `content/de/changelog.md` are created, and `content/fr/guide.md` / `content/de/guide.md` are re-translated (now mentioning CSV/PDF export). `content/fr/index.md` and `content/de/index.md` are left untouched. `.metadata/translated.json` becomes `[\"changelog.md\", \"guide.md\", \"index.md\"]`, `translated-langs.json` stays `[\"de\", \"fr\"]`, and `hashes.json` is updated so `guide.md` and `changelog.md` hold the current source SHA-1.",
+      "fixture": "fixtures/eval-3-incremental",
+      "assertions": []
+    }
+  ]
+}
