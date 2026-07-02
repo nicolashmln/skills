@@ -1,6 +1,6 @@
 # translate-vue-i18n-markdown
 
-A skill that translates the Markdown content files handled by [Nuxt Content's i18n integration](https://content.nuxt.com/docs/integrations/i18n) — the per-locale pages under `content/en/`, `content/fr/`, etc. It runs an extract script to find new or changed source pages, has the agent translate each `.md` file directly while preserving frontmatter keys, code blocks, MDC components, and links, and runs a write script to record what's been translated for incremental runs.
+A skill that translates the Markdown content files handled by [Nuxt Content's i18n integration](https://content.nuxt.com/docs/integrations/i18n) — the per-locale pages under `content/en/`, `content/fr/`, etc., plus the [`.navigation.yml`](https://content.nuxt.com/docs/utils/query-collection-navigation#navigation-metadata-with-navigationyml) directory-metadata files. It runs an extract script to find new or changed source files, has the agent translate each one directly while preserving frontmatter keys, code blocks, MDC components, and links, and runs a write script to record what's been translated for incremental runs.
 
 > For JSON locale **message** files (`i18n/locales/*.json`), use the sibling [`translate-vue-i18n`](../translate-vue-i18n) skill instead.
 
@@ -40,8 +40,8 @@ Once installed, just ask the agent:
 
 The skill follows a three-step workflow under the hood:
 
-1. **Extract** — `node <skill>/scripts/extract.ts` walks `content/<source>/`, detects source and target languages from `nuxt.config.ts` or `i18n/i18n.config.ts`, and writes a manifest at `<content-root>/.metadata/.pending.json` listing only the `.md` files that need translating, with their source and target paths.
-2. **Translate** — for each manifest entry, the agent reads the source `.md`, translates it, and writes the result to the target path (mirroring the folder structure, keeping the filename).
+1. **Extract** — `node <skill>/scripts/extract.ts` walks `content/<source>/`, detects source and target languages from `nuxt.config.ts` or `i18n/i18n.config.ts`, and writes a manifest at `<content-root>/.metadata/.pending.json` listing only the `.md` and `.navigation.yml` files that need translating, with their source and target paths.
+2. **Translate** — for each manifest entry, the agent reads the source file, translates it, and writes the result to the target path (mirroring the folder structure, keeping the filename).
 3. **Write** — `node <skill>/scripts/write.ts` verifies the target files were written and updates the metadata so future runs are incremental.
 
 ## Metadata
@@ -68,3 +68,5 @@ Frontmatter keys, and these body tokens, stay byte-identical:
 - Frontmatter flags/IDs/dates (`navigation`, `draft`, `layout`, `slug`, `id`), brand and product names, code identifiers
 
 Translated: frontmatter `title`/`description` and other prose, headings, paragraphs, list and table text, link text, and image alt text.
+
+In `.navigation.yml` files, `title` and display text like `badge` are translated; keys, `icon` values, booleans, and custom flags are preserved.

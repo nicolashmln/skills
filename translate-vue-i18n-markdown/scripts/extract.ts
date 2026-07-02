@@ -114,16 +114,28 @@ async function detectLanguages(cwd: string, contentRoot: string): Promise<{ sour
   return { source, targets };
 }
 
-async function listMarkdownFiles(dir: string): Promise<string[]> {
+function isNavigationFile(name: string): boolean {
+  return name === '.navigation.yml' || name === '.navigation.yaml';
+}
+
+async function listContentFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
   async function walk(d: string, rel: string) {
     const entries = await readdir(d, { withFileTypes: true });
     for (const e of entries) {
-      if (e.name.startsWith('.')) continue;
       const full = join(d, e.name);
       const r = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) await walk(full, r);
-      else if (e.name.endsWith('.md') || e.name.endsWith('.markdown')) out.push(r);
+      if (e.isDirectory()) {
+        if (e.name.startsWith('.')) continue;
+        await walk(full, r);
+      } else if (e.name.endsWith('.md') || e.name.endsWith('.markdown')) {
+        if (e.name.startsWith('.')) continue;
+        out.push(r);
+      } else if (isNavigationFile(e.name)) {
+        // Nuxt Content directory metadata (title, navigation.icon, …) — the only
+        // dotfiles that get translated.
+        out.push(r);
+      }
     }
   }
   await walk(dir, '');
@@ -167,9 +179,9 @@ async function main() {
     throw new Error(`Source language folder not found: ${sourceDir}`);
   }
 
-  const sourceFiles = await listMarkdownFiles(sourceDir);
+  const sourceFiles = await listContentFiles(sourceDir);
   if (sourceFiles.length === 0) {
-    console.log('No markdown files found in source folder. Nothing to do.');
+    console.log('No markdown or .navigation.yml files found in source folder. Nothing to do.');
     return;
   }
 

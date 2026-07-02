@@ -1,6 +1,6 @@
 ---
 name: translate-vue-i18n-markdown
-description: Translate Markdown content files handled by Nuxt Content's i18n integration. Use this skill whenever the user asks to translate, localize, or add a language to the Markdown pages under a Nuxt `content/` folder organized by locale (`content/en/`, `content/fr/`, …), or when they mention missing translations, syncing localized content, or adding language support for their Nuxt Content docs/blog/site. Also use it for phrases like "translate my Nuxt Content markdown", "localize the content/ folder to French", "add German to my docs content", "I added new English pages, translate them", or "sync the missing French markdown". The skill runs an extract script to find new/changed source `.md` files, has you translate each file directly (preserving frontmatter keys, code blocks, MDC components, links, and URLs), and runs a write script to record what's been translated in a `.metadata/` folder for incremental runs. For JSON locale message files (`i18n/locales/*.json`) use the `translate-vue-i18n` skill instead.
+description: Translate Markdown content files handled by Nuxt Content's i18n integration. Use this skill whenever the user asks to translate, localize, or add a language to the Markdown pages under a Nuxt `content/` folder organized by locale (`content/en/`, `content/fr/`, …), or when they mention missing translations, syncing localized content, or adding language support for their Nuxt Content docs/blog/site. Also use it for phrases like "translate my Nuxt Content markdown", "localize the content/ folder to French", "add German to my docs content", "I added new English pages, translate them", or "sync the missing French markdown". The skill runs an extract script to find new/changed source `.md` files and `.navigation.yml` directory-metadata files, has you translate each file directly (preserving frontmatter keys, code blocks, MDC components, links, and URLs), and runs a write script to record what's been translated in a `.metadata/` folder for incremental runs. For JSON locale message files (`i18n/locales/*.json`) use the `translate-vue-i18n` skill instead.
 ---
 
 # translate-vue-i18n-markdown
@@ -11,8 +11,8 @@ This skill targets the [Nuxt Content i18n](https://content.nuxt.com/docs/integra
 
 ```
 content/
-  en/index.md   en/about.md   en/blog/post-1.md
-  fr/index.md   fr/about.md   fr/blog/post-1.md
+  en/index.md   en/about.md   en/blog/.navigation.yml   en/blog/post-1.md
+  fr/index.md   fr/about.md   fr/blog/.navigation.yml   fr/blog/post-1.md
 ```
 
 The extract and write steps are TypeScript scripts in this skill's `scripts/` folder. They run on Node 24 directly (no compile step — Node strips types natively). Both scripts operate on `process.cwd()`, so run them from the project root.
@@ -41,7 +41,7 @@ If the user names specific languages ("translate to French and Spanish", "add Ge
 What the script does:
 1. **Locates the content root** (`content/` by default; `--content-dir` to override).
 2. **Detects languages** from `nuxt.config.ts` or `i18n/i18n.config.ts` (looks for `defaultLocale` and `i18n.locales`, handling both `{ code: 'en' }` objects and `'en'` strings). Falls back to the locale subfolder names under the content root; defaults source to `en` if present.
-3. **Walks markdown files** (`.md`, `.markdown`) recursively under the source-language folder (`content/<source>/`), skipping dotfiles.
+3. **Walks translatable files** recursively under the source-language folder (`content/<source>/`): markdown files (`.md`, `.markdown`) plus Nuxt Content's [`.navigation.yml` / `.navigation.yaml`](https://content.nuxt.com/docs/utils/query-collection-navigation#navigation-metadata-with-navigationyml) directory-metadata files — the only dotfiles included; everything else starting with `.` is skipped.
 4. **Diffs** each file against `<content-root>/.metadata/translated.json`, `translated-langs.json`, and `hashes.json`, using the **whole file's** SHA-1 as the unit:
    - If the target language is **not** in `translated-langs.json` → queue (fresh language gets every file).
    - Else if the file path is **not** in `translated.json` → queue (brand-new page).
@@ -72,7 +72,7 @@ If the script reports `Total files to translate: 0`, stop and tell the user ther
 ## Step 2: Translate
 
 Read `<content-root>/.metadata/.pending.json`. For **each** entry in `files`:
-1. **Read** `sourcePath` (the source-language `.md`).
+1. **Read** `sourcePath` (the source-language `.md` or `.navigation.yml`).
 2. Translate its content into the entry's `lang` (see rules below).
 3. **Write** the translation to `targetPath`. Keep the **same folder structure and filename** — `content/en/blog/post-1.md` → `content/fr/blog/post-1.md`. Create parent folders as needed.
 
@@ -92,6 +92,10 @@ Mistranslating structural tokens breaks the page (broken components, dead links,
   - **URLs** in links and images (`[text](/url)` → translate `text`, keep `/url`), and **HTML attribute values**.
   - **MDC components** — component names and prop **keys** stay unchanged: block `::callout` … `::`, inline `:badge`, and the YAML-ish prop block delimited by `---` inside a component. Keep structural prop values (`icon`, `variant`, `color`, `class`, `to`, `size`) as-is; translate only human-readable prop values (e.g. a `title:` prop) and the component's slot/body text.
   - **Brand and product names, code identifiers** — don't translate.
+- **`.navigation.yml` / `.navigation.yaml` files** (Nuxt Content directory metadata) are plain YAML:
+  - Translate human-readable **values**: `title`, and display text like `badge` under `navigation:`.
+  - Keep all **keys** unchanged, and preserve structural values as-is: `icon` (e.g. `i-lucide-square-play`), booleans like `section: true`, numbers, paths/URLs, and any custom flags whose values aren't prose.
+  - A file with no prose values (e.g. icon-only) is copied unchanged — that's fine; the write step's byte-identical warning is expected there.
 - Translating a heading changes its auto-generated anchor — that's expected and correct for a localized page.
 
 ### Style
