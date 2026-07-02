@@ -35,6 +35,7 @@ Optional flags:
 - `--force` — re-translate every file (ignore metadata)
 - `--cwd <path>` — operate on a different directory
 - `--content-dir <dir>` — content root, default `content`
+- `--exclude a/,b/` — skip source paths with these prefixes (comma-separated, relative to `content/<source>/`). Use for sections that intentionally stay untranslated, e.g. `--exclude internal/`; excluded files never enter the pending manifest.
 
 If the user names specific languages ("translate to French and Spanish", "add German"), pass them via `--targets fr,es` or `--targets de`. Auto-detection only finds languages that already have a config entry or an existing subfolder, so a fresh language always needs `--targets`.
 
@@ -86,6 +87,8 @@ Mistranslating structural tokens breaks the page (broken components, dead links,
   - Translate human-readable **values**: `title`, `description`, and other prose fields (e.g. `summary`, `seo.title`, `seo.description`).
   - Keep all **keys** unchanged.
   - Do **not** translate: booleans, numbers, dates; flags like `navigation`, `draft`, `layout`; component/layout names; `id`; `slug` / path-affecting fields (changing them alters routing — leave them unless the user asks); image paths and URLs.
+  - Translated values must remain **valid YAML** — two traps: inside a single-quoted scalar, double any apostrophe the translation introduces (`title: 'Qu''est-ce que X ?'`); and if a translated value gains a colon-space (e.g. an English ` — ` rendered as `: ` in Spanish), wrap the whole value in quotes, or YAML parses it as a nested mapping and the page renders `[object Object]`.
+  - The file must start with the opening `---` at the **first byte** — no leading blank lines, or Nuxt Content ignores the frontmatter entirely.
 - **Markdown body — translate:** headings, paragraphs, list items, table cell text, link text, image alt text, blockquotes.
 - **Markdown body — preserve byte-for-byte:**
   - **Fenced code blocks** (```` ``` ````) and **inline code** (`` `code` ``) — content stays exactly as-is.
@@ -115,8 +118,9 @@ Optional flags: `--cwd <path>`, `--content-dir <dir>` (match what you passed to 
 What the script does:
 1. Reads `<content-root>/.metadata/.pending.json`.
 2. For each entry, **verifies** the `targetPath` now exists. If a target is missing, it warns and does **not** record it, so the next extract re-queues it.
-3. **Warns** if a translated file is byte-identical to its source (often a missed translation; sometimes legitimate, e.g. a code-only page) — but records it anyway.
-4. **Updates** the metadata:
+3. **Validates** each target structurally and refuses to record failures (warned, not recorded): frontmatter must open at byte 0 and close when the source has one; the target can't have fewer headings/images than the source or be under half its line count (truncation signals); single-quoted YAML values must have doubled apostrophes, and plain values no unquoted `: `. A flagged file stays on disk but unrecorded, so the next extract re-queues it — either fix the file right away and re-run extract + write, or just let the re-queue re-translate it.
+4. **Warns** if a translated file is byte-identical to its source (often a missed translation; sometimes legitimate, e.g. a code-only page) — but records it anyway.
+5. **Updates** the metadata:
    - Adds each translated file path to `<content-root>/.metadata/translated.json` (sorted array, e.g. `["blog/post-1.md", "index.md"]`).
    - Adds each language that had at least one recorded file to `translated-langs.json` (sorted array, e.g. `["de", "fr"]`).
    - Records `path → sha1(sourceFile)` in `hashes.json` (sorted flat object) so future extracts detect source-page changes and re-queue stale translations.
@@ -130,7 +134,7 @@ Upgrade note: projects without `hashes.json` get it populated on the next extrac
 
 After `write.ts` finishes, summarize briefly:
 - How many files were translated, into which languages.
-- Any warnings the writer printed (missing targets, byte-identical files).
+- Any warnings the writer printed (missing targets, validation failures, byte-identical files). If a file failed validation, say why and that it will re-queue on the next run.
 - The estimated token count from the writer's last line (`Estimated tokens used for translation: ~X`) — pass it through verbatim; it's a rough estimate, so don't dress it up.
 - That `.metadata/` now tracks what's been translated, so subsequent runs are incremental.
 

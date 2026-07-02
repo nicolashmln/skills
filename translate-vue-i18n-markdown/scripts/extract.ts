@@ -10,6 +10,7 @@ interface Args {
   source?: string;
   targets?: string[];
   force: boolean;
+  exclude: string[];
 }
 
 interface PendingFile {
@@ -21,7 +22,7 @@ interface PendingFile {
 }
 
 function parseArgs(): Args {
-  const args: Args = { cwd: process.cwd(), contentDir: 'content', force: false };
+  const args: Args = { cwd: process.cwd(), contentDir: 'content', force: false, exclude: [] };
   for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
     if (a === '--source') args.source = process.argv[++i];
@@ -29,6 +30,7 @@ function parseArgs(): Args {
     else if (a === '--force') args.force = true;
     else if (a === '--cwd') args.cwd = process.argv[++i];
     else if (a === '--content-dir') args.contentDir = process.argv[++i];
+    else if (a === '--exclude') args.exclude = process.argv[++i].split(',').map(s => s.trim()).filter(Boolean);
     else throw new Error(`Unknown argument: ${a}`);
   }
   return args;
@@ -179,7 +181,17 @@ async function main() {
     throw new Error(`Source language folder not found: ${sourceDir}`);
   }
 
-  const sourceFiles = await listContentFiles(sourceDir);
+  let sourceFiles = await listContentFiles(sourceDir);
+  if (args.exclude.length > 0) {
+    // Source-relative path prefixes that stay untranslated (e.g. an English-only
+    // internal/ section). Filtering here keeps them out of the pending manifest
+    // entirely, instead of re-queueing them on every run for a downstream step to drop.
+    const before = sourceFiles.length;
+    sourceFiles = sourceFiles.filter(relPath => !args.exclude.some(prefix => relPath.startsWith(prefix)));
+    if (before > sourceFiles.length) {
+      console.log(`Excluded ${before - sourceFiles.length} file(s) matching [${args.exclude.join(', ')}].`);
+    }
+  }
   if (sourceFiles.length === 0) {
     console.log('No markdown or .navigation.yml files found in source folder. Nothing to do.');
     return;
