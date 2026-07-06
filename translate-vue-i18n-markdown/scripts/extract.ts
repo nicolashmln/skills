@@ -207,6 +207,35 @@ async function main() {
   const translatedLangs = args.force ? new Set<string>() : new Set(await readArrayMeta(translatedLangsPath));
   const hashes: { [k: string]: string } = args.force ? {} : await readObjectMeta(hashesPath);
 
+  // Reconcile deletions: a path recorded in the metadata whose source file no longer
+  // exists on disk is orphaned. Delete its translated copies in every established
+  // language and prune it from the metadata, so a removed source page doesn't leave
+  // stale translations and stale tracking behind. Existence is checked on disk (not
+  // against the exclude-filtered sourceFiles list) so --excluded files, whose source
+  // still exists, are never mistaken for deletions. Skipped under --force (no recorded
+  // state to diff against) and — because we only reach here when the source folder has
+  // files — a misdetected/empty source folder can never trigger a mass deletion.
+  const deletedTargets: { lang: string; relPath: string }[] = [];
+  const prunedPaths: string[] = [];
+  if (!args.force) {
+    const recordedPaths = new Set<string>([...translated, ...Object.keys(hashes)]);
+    const langsToClean = new Set<string>([...targets, ...translatedLangs]);
+    for (const relPath of recordedPaths) {
+      if (existsSync(join(sourceDir, relPath))) continue; // source still present — keep.
+      for (const lang of langsToClean) {
+        const targetAbs = join(contentRoot, lang, relPath);
+        if (existsSync(targetAbs)) {
+          await unlink(targetAbs);
+          deletedTargets.push({ lang, relPath });
+        }
+      }
+      // Prune metadata even when no target file remained on disk, so it never goes stale.
+      translated.delete(relPath);
+      delete hashes[relPath];
+      prunedPaths.push(relPath);
+    }
+  }
+
   // Hash every source file once (whole-file content is the translation unit).
   const sourceHashes: { [relPath: string]: string } = {};
   for (const relPath of sourceFiles) {
@@ -270,18 +299,28 @@ async function main() {
     await unlink(pendingPath);
   }
 
-  // Backfilled hashes need to be persisted even when nothing was queued, so that
-  // the next run sees up-to-date metadata. write.ts will overwrite this file with
-  // its own additions for any files that get translated this round; backfills are
-  // disjoint from those (they come from already-translated files), so no conflict.
-  if (backfilled > 0 || args.force) {
+  // Backfilled hashes and pruned deletions need to be persisted even when nothing was
+  // queued, so that the next run sees up-to-date metadata. write.ts will overwrite these
+  // files with its own additions for any files translated this round; it reads the
+  // already-persisted (pruned/backfilled) state first, so there's no conflict.
+  if (backfilled > 0 || prunedPaths.length > 0 || args.force) {
     const sortedHashes = Object.fromEntries(
       Object.entries(hashes).sort(([a], [b]) => a.localeCompare(b)),
     );
     await writeFile(hashesPath, JSON.stringify(sortedHashes, null, 2) + '\n');
   }
+  if (prunedPaths.length > 0) {
+    await writeFile(translatedPath, JSON.stringify([...translated].sort(), null, 2) + '\n');
+  }
 
   console.log();
+  if (deletedTargets.length > 0) {
+    console.log(`Deleted ${deletedTargets.length} orphaned translation(s) whose source was removed:`);
+    for (const d of deletedTargets) console.log(`  ${d.lang}/${d.relPath}`);
+  }
+  if (prunedPaths.length > 0) {
+    console.log(`Pruned ${prunedPaths.length} path(s) from metadata.`);
+  }
   if (files.length > 0) {
     console.log(`Wrote ${pendingPath}`);
   }

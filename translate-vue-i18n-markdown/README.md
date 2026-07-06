@@ -54,6 +54,8 @@ The skill keeps three files in `<content-root>/.metadata/`:
 
 A file whose source matches its stored hash is skipped on the next extract. If the source page changes, extract picks it up automatically; pass `--force` to ignore all metadata and re-translate everything.
 
+When a source page is **deleted**, the next extract reconciles it automatically: it removes that page's translated copies from every language folder and prunes its `translated.json` / `hashes.json` entries, so removed pages don't leave orphaned translations behind. Files kept untranslated via `--exclude` are never affected (their source still exists), and this cleanup is skipped under `--force`.
+
 The `.metadata/` folder is a dot-folder, so Nuxt Content ignores it and per-locale collections (`source.include: '<locale>/**'`) never match it. Commit it to share incremental tracking, or `.gitignore` it.
 
 Upgrading from a version without `hashes.json`? On the first run, extract silently backfills hashes for files already in `translated.json` so existing translations aren't re-queued.

@@ -24,6 +24,14 @@
       "expected_output": "Only the changed page (`guide.md`, whose stored hash no longer matches) and the new page (`changelog.md`, not yet in `translated.json`) are queued — `index.md` is skipped because its hash still matches. New files `content/fr/changelog.md` and `content/de/changelog.md` are created, and `content/fr/guide.md` / `content/de/guide.md` are re-translated (now mentioning CSV/PDF export). `content/fr/index.md` and `content/de/index.md` are left untouched. `.metadata/translated.json` becomes `[\"changelog.md\", \"guide.md\", \"index.md\"]`, `translated-langs.json` stays `[\"de\", \"fr\"]`, and `hashes.json` is updated so `guide.md` and `changelog.md` hold the current source SHA-1.",
       "fixture": "fixtures/eval-3-incremental",
       "assertions": []
+    },
+    {
+      "id": 4,
+      "name": "deletion",
+      "prompt": "I deleted the old page from my English content. Please sync the French and German translations.",
+      "expected_output": "The English source `content/en/old.md` no longer exists but is still recorded in `.metadata/`, so its orphaned translations are removed: `content/fr/old.md` and `content/de/old.md` are deleted. The unchanged pages are left untouched — `content/fr/index.md`, `content/fr/guide.md`, `content/de/index.md`, and `content/de/guide.md` all remain (their source hashes still match, so nothing is translated). The metadata is pruned: `.metadata/translated.json` becomes `[\"guide.md\", \"index.md\"]` and `.metadata/hashes.json` drops the `old.md` key (keeping `guide.md` and `index.md`). `.metadata/translated-langs.json` stays `[\"de\", \"fr\"]`. The extract step reports `Total files to translate: 0` alongside the deletion of the two orphaned files.",
+      "fixture": "fixtures/eval-4-deletion",
+      "assertions": []
     }
   ]
 }

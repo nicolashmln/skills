@@ -49,7 +49,8 @@ What the script does:
    - Else if the path is **not** in `hashes.json` → silently backfill `hashes[path] = sha1(sourceFile)` and **do not queue** (migration path for projects predating hash tracking).
    - Else if `hashes[path]` differs from the current source's SHA-1 → queue (source page changed since last translation).
    - Else → skip.
-5. **Writes** a manifest to `<content-root>/.metadata/.pending.json`:
+5. **Reconciles deletions.** Any path recorded in `translated.json` / `hashes.json` whose source file no longer exists under `content/<source>/` is orphaned: its translated copies are deleted from **every** established language folder and its metadata entries are pruned. Excluded files (`--exclude`) are unaffected — their source still exists. This runs automatically on every extract; it is **skipped under `--force`** (no recorded state to diff against) and never runs when the source folder has no files (a safety valve against a misdetected content root deleting everything).
+6. **Writes** a manifest to `<content-root>/.metadata/.pending.json`:
 
 ```json
 {
@@ -68,7 +69,7 @@ What the script does:
 }
 ```
 
-If the script reports `Total files to translate: 0`, stop and tell the user there's nothing to translate.
+If the script reports `Total files to translate: 0`, there's nothing to translate — but first check its output for a `Deleted N orphaned translation(s)…` line. If it deleted orphans, report that to the user; only stop silently when nothing was translated **and** nothing was deleted.
 
 ## Step 2: Translate
 
@@ -134,6 +135,7 @@ Upgrade note: projects without `hashes.json` get it populated on the next extrac
 
 After `write.ts` finishes, summarize briefly:
 - How many files were translated, into which languages.
+- Any orphaned translations the extract step deleted because their source page was removed (from its `Deleted N orphaned translation(s)…` output), and that their metadata was pruned.
 - Any warnings the writer printed (missing targets, validation failures, byte-identical files). If a file failed validation, say why and that it will re-queue on the next run.
 - The estimated token count from the writer's last line (`Estimated tokens used for translation: ~X`) — pass it through verbatim; it's a rough estimate, so don't dress it up.
 - That `.metadata/` now tracks what's been translated, so subsequent runs are incremental.
