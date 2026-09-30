@@ -3,6 +3,7 @@ import { readFile, writeFile, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { validateTarget } from './validate.ts';
 
 interface Args {
   cwd: string;
@@ -42,7 +43,7 @@ async function readArrayMeta(path: string): Promise<string[]> {
   return Array.isArray(v) ? v : [];
 }
 
-async function readObjectMeta(path: string): Promise<{ [k: string]: string }> {
+async function readObjectMeta<T = string>(path: string): Promise<{ [k: string]: T }> {
   if (!existsSync(path)) return {};
   const text = await readFile(path, 'utf8');
   if (!text.trim()) return {};
@@ -50,65 +51,12 @@ async function readObjectMeta(path: string): Promise<{ [k: string]: string }> {
   return v !== null && typeof v === 'object' && !Array.isArray(v) ? v : {};
 }
 
+function sortKeys<T>(obj: { [k: string]: T }): { [k: string]: T } {
+  return Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b)));
+}
+
 function sha1(s: string): string {
   return createHash('sha1').update(s).digest('hex');
-}
-
-function isNavigationFile(relPath: string): boolean {
-  return relPath.endsWith('.navigation.yml') || relPath.endsWith('.navigation.yaml');
-}
-
-/**
- * Structural sanity checks before recording a translation. A broken target that gets
- * recorded is permanent — extract only re-queues a file when the SOURCE changes — so
- * refuse to record anything that would break at render time. The checks mirror failure
- * modes observed in real translations: content pushed off byte 0 (Nuxt Content then
- * ignores the frontmatter entirely), truncated bodies, and YAML values the translation
- * made unparseable. Heading/image counts are reliable signals because the translation
- * rules require preserving markdown structure (and code blocks byte-for-byte).
- */
-function validateTarget(relPath: string, source: string, target: string): string[] {
-  const problems: string[] = [];
-  const fmMatch = target.match(/^---\n([\s\S]*?)\n---(\r?\n|$)/);
-  if (!isNavigationFile(relPath)) {
-    if (source.trimStart().startsWith('---')) {
-      if (!target.startsWith('---')) problems.push('frontmatter fence missing at byte 0');
-      else if (!fmMatch) problems.push('frontmatter fence never closes');
-    }
-    const sourceLines = source.split('\n').length;
-    const targetLines = target.split('\n').length;
-    if (sourceLines > 10 && targetLines < sourceLines * 0.5) {
-      problems.push(`suspiciously short (${targetLines} lines vs ${sourceLines} in source)`);
-    }
-    const headings = (t: string) => (t.match(/^#{1,6}\s/gm) ?? []).length;
-    const images = (t: string) => (t.match(/!\[/g) ?? []).length;
-    if (headings(target) < headings(source)) {
-      problems.push(`fewer headings than source (${headings(target)} vs ${headings(source)})`);
-    }
-    if (images(target) < images(source)) {
-      problems.push(`fewer images than source (${images(target)} vs ${images(source)})`);
-    }
-  } else {
-    const keys = (t: string) => (t.match(/^[\w.-]+:/gm) ?? []).length;
-    if (keys(target) < keys(source)) {
-      problems.push(`fewer top-level YAML keys than source (${keys(target)} vs ${keys(source)})`);
-    }
-  }
-  // YAML the translation can break: an apostrophe inside a single-quoted scalar must be
-  // doubled ('Qu''est-ce…'), and a plain (unquoted) scalar can't contain ": " (happens
-  // when a source dash gets translated as a colon).
-  const yamlPart = isNavigationFile(relPath) ? target : fmMatch?.[1];
-  for (const line of yamlPart?.split('\n') ?? []) {
-    const quoted = line.match(/^\s*[\w.-]+:\s*'(.*)'\s*$/);
-    if (quoted && /(^|[^'])'([^']|$)/.test(quoted[1])) {
-      problems.push(`unescaped single quote in YAML value: ${line.trim()}`);
-    }
-    const plain = line.match(/^\s*[\w.-]+:\s+([^'"|>[{&*!#-].*)$/);
-    if (plain && plain[1].includes(': ')) {
-      problems.push(`unquoted colon in YAML value: ${line.trim()}`);
-    }
-  }
-  return problems;
 }
 
 async function main() {
@@ -133,9 +81,11 @@ async function main() {
   const translatedPath = join(metadataDir, 'translated.json');
   const translatedLangsPath = join(metadataDir, 'translated-langs.json');
   const hashesPath = join(metadataDir, 'hashes.json');
+  const targetHashesPath = join(metadataDir, 'target-hashes.json');
   const translated = new Set(await readArrayMeta(translatedPath));
   const translatedLangs = new Set(await readArrayMeta(translatedLangsPath));
   const hashes: { [k: string]: string } = await readObjectMeta(hashesPath);
+  const targetHashes = await readObjectMeta<{ [relPath: string]: string }>(targetHashesPath);
 
   let recordedFiles = 0;
   let totalSourceBytes = 0;
@@ -183,6 +133,17 @@ async function main() {
   // so a run where every target was missing doesn't falsely flip a fresh language.
   for (const lang of langsWithWrites) translatedLangs.add(lang);
 
+  // Snapshot every language's target for each path whose source hash was just recorded —
+  // including languages extract adopted rather than queued. Extract compares against these
+  // snapshots to tell a translation updated alongside its source (adopt) from a stale one
+  // (re-queue), so they must describe the targets as of the recorded source hash.
+  for (const relPath of new Set(summary.map(s => s.relPath))) {
+    for (const lang of translatedLangs) {
+      const targetAbs = join(contentRoot, lang, relPath);
+      if (existsSync(targetAbs)) (targetHashes[lang] ??= {})[relPath] = sha1(await readFile(targetAbs, 'utf8'));
+    }
+  }
+
   await writeFile(
     translatedPath,
     JSON.stringify([...translated].sort(), null, 2) + '\n',
@@ -191,10 +152,11 @@ async function main() {
     translatedLangsPath,
     JSON.stringify([...translatedLangs].sort(), null, 2) + '\n',
   );
-  const sortedHashes = Object.fromEntries(
-    Object.entries(hashes).sort(([a], [b]) => a.localeCompare(b)),
-  );
-  await writeFile(hashesPath, JSON.stringify(sortedHashes, null, 2) + '\n');
+  await writeFile(hashesPath, JSON.stringify(sortKeys(hashes), null, 2) + '\n');
+  const sortedTargetHashes = sortKeys(Object.fromEntries(
+    Object.entries(targetHashes).map(([lang, perPath]) => [lang, sortKeys(perPath)]),
+  ));
+  await writeFile(targetHashesPath, JSON.stringify(sortedTargetHashes, null, 2) + '\n');
   await unlink(pendingPath);
 
   // Rough token estimate: the agent reads each source file and writes a translated
@@ -208,6 +170,7 @@ async function main() {
   console.log(`Updated ${translatedPath} (${translated.size} files total).`);
   console.log(`Updated ${translatedLangsPath} ([${[...translatedLangs].sort().join(', ')}]).`);
   console.log(`Updated ${hashesPath} (${Object.keys(hashes).length} hashes total).`);
+  console.log(`Updated ${targetHashesPath}.`);
   console.log(`Removed ${pendingPath}.`);
   console.log(`Estimated tokens used for translation: ~${estimatedTokens.toLocaleString()} (rough; based on translated content, excludes skill prompt overhead).`);
 

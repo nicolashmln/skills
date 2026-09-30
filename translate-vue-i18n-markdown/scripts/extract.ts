@@ -3,6 +3,7 @@ import { readFile, readdir, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { validateTarget } from './validate.ts';
 
 interface Args {
   cwd: string;
@@ -152,12 +153,16 @@ async function readArrayMeta(path: string): Promise<string[]> {
   return Array.isArray(v) ? v : [];
 }
 
-async function readObjectMeta(path: string): Promise<{ [k: string]: string }> {
+async function readObjectMeta<T = string>(path: string): Promise<{ [k: string]: T }> {
   if (!existsSync(path)) return {};
   const text = await readFile(path, 'utf8');
   if (!text.trim()) return {};
   const v = JSON.parse(text);
   return v !== null && typeof v === 'object' && !Array.isArray(v) ? v : {};
+}
+
+function sortKeys<T>(obj: { [k: string]: T }): { [k: string]: T } {
+  return Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b)));
 }
 
 function sha1(s: string): string {
@@ -203,9 +208,13 @@ async function main() {
   const translatedPath = join(metadataDir, 'translated.json');
   const translatedLangsPath = join(metadataDir, 'translated-langs.json');
   const hashesPath = join(metadataDir, 'hashes.json');
+  const targetHashesPath = join(metadataDir, 'target-hashes.json');
   const translated = args.force ? new Set<string>() : new Set(await readArrayMeta(translatedPath));
   const translatedLangs = args.force ? new Set<string>() : new Set(await readArrayMeta(translatedLangsPath));
   const hashes: { [k: string]: string } = args.force ? {} : await readObjectMeta(hashesPath);
+  // lang → path → SHA-1 of the target file as of when hashes[path] was recorded.
+  const targetHashes: { [lang: string]: { [relPath: string]: string } } =
+    args.force ? {} : await readObjectMeta(targetHashesPath);
 
   // Reconcile deletions: a path recorded in the metadata whose source file no longer
   // exists on disk is orphaned. Delete its translated copies in every established
@@ -232,56 +241,100 @@ async function main() {
       // Prune metadata even when no target file remained on disk, so it never goes stale.
       translated.delete(relPath);
       delete hashes[relPath];
+      for (const perPath of Object.values(targetHashes)) delete perPath[relPath];
       prunedPaths.push(relPath);
     }
   }
 
-  // Hash every source file once (whole-file content is the translation unit).
-  const sourceHashes: { [relPath: string]: string } = {};
-  for (const relPath of sourceFiles) {
-    sourceHashes[relPath] = sha1(await readFile(join(sourceDir, relPath), 'utf8'));
-  }
-
-  const files: PendingFile[] = [];
+  const queued = new Map<string, PendingFile[]>(targets.map(lang => [lang, []]));
+  const adopted: { lang: string; relPath: string }[] = [];
   let backfilled = 0;
+  let adoptionsRecorded = 0;
+  let targetHashesChanged = false;
 
-  for (const lang of targets) {
-    const isFreshLang = !translatedLangs.has(lang);
+  for (const relPath of sourceFiles) {
+    // Whole-file content is the translation unit.
+    const sourceContent = await readFile(join(sourceDir, relPath), 'utf8');
+    const sourceHash = sha1(sourceContent);
 
-    for (const relPath of sourceFiles) {
-      const sourceHash = sourceHashes[relPath];
+    if (translated.has(relPath) && !(relPath in hashes)) {
+      // File was translated by a previous version of the skill that didn't track
+      // hashes. Backfill silently — assume the existing translation matches the
+      // current source.
+      hashes[relPath] = sourceHash;
+      backfilled++;
+    }
+    const isNew = !translated.has(relPath);
+    const sourceChanged = !isNew && hashes[relPath] !== sourceHash;
+    const adoptable: { lang: string; targetHash: string }[] = [];
+    let queuedAny = false;
+
+    for (const lang of targets) {
       let reason: PendingFile['reason'] | null = null;
 
-      if (isFreshLang) {
+      if (!translatedLangs.has(lang)) {
         // Fresh language: translate every file regardless of metadata. write.ts
         // records the source hash when the translation lands.
         reason = 'fresh-language';
-      } else if (!translated.has(relPath)) {
-        // Brand-new source file.
-        reason = 'new';
-      } else if (!(relPath in hashes)) {
-        // File was translated by a previous version of the skill that didn't track
-        // hashes. Backfill silently — assume the existing translation matches the
-        // current source.
-        hashes[relPath] = sourceHash;
-        backfilled++;
-      } else if (hashes[relPath] !== sourceHash) {
-        // Source file changed since last translation — re-queue.
-        reason = 'changed';
+      } else {
+        const targetAbs = join(contentRoot, lang, relPath);
+        const targetContent = existsSync(targetAbs) ? await readFile(targetAbs, 'utf8') : null;
+        const targetHash = targetContent === null ? null : sha1(targetContent);
+        const snapshot = targetHashes[lang]?.[relPath];
+
+        if (isNew || sourceChanged) {
+          // Source is new or changed. If its target already exists (new page) or was edited
+          // since the last recorded snapshot (changed page), it was translated outside the
+          // skill — typically in the same merged PR as the source. Adopt it instead of
+          // re-translating, provided it passes the checks write.ts applies. Without a
+          // snapshot to compare against, a changed page is always re-queued.
+          const updatedAlongside = targetContent !== null
+            && (isNew || (snapshot !== undefined && targetHash !== snapshot));
+          if (
+            updatedAlongside
+            && targetContent !== sourceContent
+            && validateTarget(relPath, sourceContent, targetContent).length === 0
+          ) {
+            adoptable.push({ lang, targetHash: targetHash! });
+          } else {
+            reason = isNew ? 'new' : 'changed';
+          }
+        } else if (targetHash !== null && targetHash !== snapshot) {
+          // Source unchanged, but the target was edited on its own (e.g. a typo fix) or
+          // predates target-hash tracking. Refresh the snapshot so that edit isn't later
+          // mistaken for a translation of the next source change.
+          (targetHashes[lang] ??= {})[relPath] = targetHash;
+          targetHashesChanged = true;
+        }
+        // else: already translated and unchanged. Skip.
       }
-      // else: already translated and unchanged. Skip.
 
       if (reason) {
-        files.push({
+        queued.get(lang)!.push({
           lang,
           relPath,
           sourcePath: join(args.contentDir, source, relPath),
           targetPath: join(args.contentDir, lang, relPath),
           reason,
         });
+        queuedAny = true;
       }
     }
+
+    for (const { lang } of adoptable) adopted.push({ lang, relPath });
+    if (adoptable.length > 0 && !queuedAny) {
+      translated.add(relPath);
+      hashes[relPath] = sourceHash;
+      for (const { lang, targetHash } of adoptable) (targetHashes[lang] ??= {})[relPath] = targetHash;
+      adoptionsRecorded++;
+    }
+    // If another language was queued for this path, leave its metadata alone: write.ts
+    // records it (snapshotting the adopted targets too) once the queued translations land.
+    // Recording it now would hide the queued languages from the next extract if their
+    // translation fails.
   }
+
+  const files = targets.flatMap(lang => queued.get(lang)!);
 
   const pending = {
     sourceLang: source,
@@ -299,18 +352,22 @@ async function main() {
     await unlink(pendingPath);
   }
 
-  // Backfilled hashes and pruned deletions need to be persisted even when nothing was
-  // queued, so that the next run sees up-to-date metadata. write.ts will overwrite these
-  // files with its own additions for any files translated this round; it reads the
-  // already-persisted (pruned/backfilled) state first, so there's no conflict.
-  if (backfilled > 0 || prunedPaths.length > 0 || args.force) {
-    const sortedHashes = Object.fromEntries(
-      Object.entries(hashes).sort(([a], [b]) => a.localeCompare(b)),
-    );
-    await writeFile(hashesPath, JSON.stringify(sortedHashes, null, 2) + '\n');
+  // Backfilled hashes, adoptions, and pruned deletions need to be persisted even when
+  // nothing was queued, so that the next run sees up-to-date metadata. write.ts will
+  // overwrite these files with its own additions for any files translated this round; it
+  // reads the already-persisted (pruned/backfilled/adopted) state first, so there's no
+  // conflict.
+  if (backfilled > 0 || prunedPaths.length > 0 || adoptionsRecorded > 0 || args.force) {
+    await writeFile(hashesPath, JSON.stringify(sortKeys(hashes), null, 2) + '\n');
   }
-  if (prunedPaths.length > 0) {
+  if (prunedPaths.length > 0 || adoptionsRecorded > 0) {
     await writeFile(translatedPath, JSON.stringify([...translated].sort(), null, 2) + '\n');
+  }
+  if (targetHashesChanged || prunedPaths.length > 0 || adoptionsRecorded > 0 || args.force) {
+    const sortedTargetHashes = sortKeys(Object.fromEntries(
+      Object.entries(targetHashes).map(([lang, perPath]) => [lang, sortKeys(perPath)]),
+    ));
+    await writeFile(targetHashesPath, JSON.stringify(sortedTargetHashes, null, 2) + '\n');
   }
 
   console.log();
@@ -320,6 +377,10 @@ async function main() {
   }
   if (prunedPaths.length > 0) {
     console.log(`Pruned ${prunedPaths.length} path(s) from metadata.`);
+  }
+  if (adopted.length > 0) {
+    console.log(`Adopted ${adopted.length} translation(s) already updated alongside their source (not re-queued):`);
+    for (const a of adopted) console.log(`  ${a.lang}/${a.relPath}`);
   }
   if (files.length > 0) {
     console.log(`Wrote ${pendingPath}`);

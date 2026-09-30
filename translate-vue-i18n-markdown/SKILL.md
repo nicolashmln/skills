@@ -43,13 +43,15 @@ What the script does:
 1. **Locates the content root** (`content/` by default; `--content-dir` to override).
 2. **Detects languages** from `nuxt.config.ts` or `i18n/i18n.config.ts` (looks for `defaultLocale` and `i18n.locales`, handling both `{ code: 'en' }` objects and `'en'` strings). Falls back to the locale subfolder names under the content root; defaults source to `en` if present.
 3. **Walks translatable files** recursively under the source-language folder (`content/<source>/`): markdown files (`.md`, `.markdown`) plus Nuxt Content's [`.navigation.yml` / `.navigation.yaml`](https://content.nuxt.com/docs/utils/query-collection-navigation#navigation-metadata-with-navigationyml) directory-metadata files — the only dotfiles included; everything else starting with `.` is skipped.
-4. **Diffs** each file against `<content-root>/.metadata/translated.json`, `translated-langs.json`, and `hashes.json`, using the **whole file's** SHA-1 as the unit:
+4. **Diffs** each file against `<content-root>/.metadata/translated.json`, `translated-langs.json`, `hashes.json`, and `target-hashes.json`, using the **whole file's** SHA-1 as the unit:
    - If the target language is **not** in `translated-langs.json` → queue (fresh language gets every file).
-   - Else if the file path is **not** in `translated.json` → queue (brand-new page).
+   - Else if the file path is **not** in `translated.json` → brand-new page: **adopt** it if the target file already exists, differs from the source, and passes write-step validation; otherwise queue.
    - Else if the path is **not** in `hashes.json` → silently backfill `hashes[path] = sha1(sourceFile)` and **do not queue** (migration path for projects predating hash tracking).
-   - Else if `hashes[path]` differs from the current source's SHA-1 → queue (source page changed since last translation).
-   - Else → skip.
-5. **Reconciles deletions.** Any path recorded in `translated.json` / `hashes.json` whose source file no longer exists under `content/<source>/` is orphaned: its translated copies are deleted from **every** established language folder and its metadata entries are pruned. Excluded files (`--exclude`) are unaffected — their source still exists. This runs automatically on every extract; it is **skipped under `--force`** (no recorded state to diff against) and never runs when the source folder has no files (a safety valve against a misdetected content root deleting everything).
+   - Else if `hashes[path]` differs from the current source's SHA-1 → source page changed: **adopt** it if the target also changed since its `target-hashes.json` snapshot (and differs from the source and passes validation); otherwise queue. With no snapshot, it's always queued.
+   - Else → skip. If the target was edited on its own, its snapshot is refreshed, so a later source change isn't mistaken for one already translated.
+
+   **Adoption** covers translations updated outside the skill, typically a merged PR that edited both `content/en/x.md` and `content/fr/x.md` without updating `.metadata/`. The target is kept as-is and recorded, with no re-translation. If every target language of a path is adopted, extract records it right away. If any language is still queued for that path, recording waits for the write step. The rule is a heuristic: a PR that changes the source *and* makes an unrelated edit to the translation (e.g. a typo fix) gets adopted too, so extract lists every adopted file under `Adopted N translation(s)…`.
+5. **Reconciles deletions.** Any path recorded in `translated.json` / `hashes.json` / `target-hashes.json` whose source file no longer exists under `content/<source>/` is orphaned: its translated copies are deleted from **every** established language folder and its metadata entries are pruned. Excluded files (`--exclude`) are unaffected — their source still exists. This runs automatically on every extract; it is **skipped under `--force`** (no recorded state to diff against) and never runs when the source folder has no files (a safety valve against a misdetected content root deleting everything).
 6. **Writes** a manifest to `<content-root>/.metadata/.pending.json`:
 
 ```json
@@ -69,7 +71,7 @@ What the script does:
 }
 ```
 
-If the script reports `Total files to translate: 0`, there's nothing to translate — but first check its output for a `Deleted N orphaned translation(s)…` line. If it deleted orphans, report that to the user; only stop silently when nothing was translated **and** nothing was deleted.
+If the script reports `Total files to translate: 0`, there's nothing to translate — but first check its output for `Deleted N orphaned translation(s)…` and `Adopted N translation(s)…` lines. If it deleted orphans or adopted translations, report that to the user; only stop silently when nothing was translated, deleted, **or** adopted.
 
 ## Step 2: Translate
 
@@ -125,23 +127,25 @@ What the script does:
    - Adds each translated file path to `<content-root>/.metadata/translated.json` (sorted array, e.g. `["blog/post-1.md", "index.md"]`).
    - Adds each language that had at least one recorded file to `translated-langs.json` (sorted array, e.g. `["de", "fr"]`).
    - Records `path → sha1(sourceFile)` in `hashes.json` (sorted flat object) so future extracts detect source-page changes and re-queue stale translations.
-5. **Deletes** the pending file.
+   - For each recorded path, snapshots every established language's target as `lang → path → sha1(targetFile)` in `target-hashes.json`. This includes languages extract adopted instead of queueing. Extract compares against these snapshots to adopt translations that were updated alongside their source.
+6. **Deletes** the pending file.
 
 Note: `translated.json` is keyed by source-relative file path and shared across languages (like the sibling skill's dotted keys). So include **all** established target languages in each run (don't pass `--targets fr` alone when `de` is also live), or a new page will be marked translated globally before `de` gets it.
 
-Upgrade note: projects without `hashes.json` get it populated on the next extract, backfilled for files already in `translated.json` — pure backfill, no re-translation, logged as `Backfilled N hash(es)`.
+Upgrade note: projects without `hashes.json` get it populated on the next extract, backfilled for files already in `translated.json` — pure backfill, no re-translation, logged as `Backfilled N hash(es)`. Likewise, `target-hashes.json` is backfilled for every up-to-date translation on the next extract. Until a path has a snapshot, a change to its source is always re-queued, never adopted.
 
 ## Reporting back to the user
 
 After `write.ts` finishes, summarize briefly:
 - How many files were translated, into which languages.
 - Any orphaned translations the extract step deleted because their source page was removed (from its `Deleted N orphaned translation(s)…` output), and that their metadata was pruned.
+- Any translations the extract step adopted instead of re-translating (from its `Adopted N translation(s)…` output). List them, so the user can check that each one really reflects the new source.
 - Any warnings the writer printed (missing targets, validation failures, byte-identical files). If a file failed validation, say why and that it will re-queue on the next run.
 - The estimated token count from the writer's last line (`Estimated tokens used for translation: ~X`) — pass it through verbatim; it's a rough estimate, so don't dress it up.
 - That `.metadata/` now tracks what's been translated, so subsequent runs are incremental.
 
 ## Notes
 
-- The scripts have zero dependencies — only Node 24+ built-ins (`node:fs/promises`, `node:crypto`, `node:path`).
+- The scripts have zero dependencies — only Node 24+ built-ins (`node:fs/promises`, `node:crypto`, `node:path`). `scripts/validate.ts` holds the structural checks shared by both scripts.
 - Config detection uses regex over `nuxt.config.ts` and `i18n/i18n.config.ts` (handles `defaultLocale: 'en'` and `locales: [{ code: 'en' }, …]` or `locales: ['en', …]`). If detection fails, the script falls back to locale subfolder names — pass `--source` / `--targets` to override.
 - The `.metadata/` folder lives under the content root but is a dot-folder, so Nuxt Content ignores it, and per-locale collections (`source.include: '<locale>/**'`) never match it. Commit it to share incremental tracking across contributors, or `.gitignore` it if you prefer not to.
