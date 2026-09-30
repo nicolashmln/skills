@@ -46,22 +46,25 @@ The skill follows a three-step workflow under the hood:
 
 ## Metadata
 
-The skill keeps four files in `<content-root>/.metadata/`:
+The skill keeps one file in `<content-root>/.metadata/`: `translations.json`, with a record per language and source-relative path holding the SHA-1 of the **whole source file** and of its translation when that translation was recorded:
 
-- `translated.json` — flat array of source-relative file paths that have been translated, e.g. `["blog/post-1.md", "index.md"]`.
-- `translated-langs.json` — array of language codes already processed, e.g. `["fr", "de"]`.
-- `hashes.json` — flat map of file path to the SHA-1 of the **whole source file** at translation time, e.g. `{"index.md": "70f8bb…"}`. Extract uses this to detect when a source page has changed and re-queue it.
-- `target-hashes.json` — per language, the SHA-1 of each translated file as of the last recorded source hash, e.g. `{"fr": {"index.md": "3c1d9e…"}}`. Extract uses this to tell a translation that was updated alongside its source from a stale one.
+```json
+{
+  "fr": {
+    "index.md": { "source": "70f8bb…", "target": "3c1d9e…" }
+  }
+}
+```
 
-A file whose source matches its stored hash is skipped on the next extract. If the source page changes, extract picks it up automatically; pass `--force` to ignore all metadata and re-translate everything.
+Each language is tracked on its own. A file whose source matches its recorded hash is skipped on the next extract. If the source page changes, extract picks it up automatically. A translation that goes missing or fails validation in one language is re-queued for that language only. Pass `--force` to forget the target languages' records and re-translate everything.
 
-Sometimes the translation arrives with the source change, for example in a merged PR that edited both `content/en/guide.md` and `content/fr/guide.md` without updating `.metadata/`. In that case extract **adopts** the translation: it records the file as translated instead of re-queueing it. A changed page is adopted when its target also changed since the last snapshot. A new page is adopted when its target already exists. In both cases the target must differ from the source and pass the write step's structural validation. Extract lists every adopted file. One case gets adopted wrongly: a PR that changes a source page and also makes an unrelated edit to its translation, such as a typo fix.
+Sometimes the translation arrives with the source change, for example in a merged PR that edited both `content/en/guide.md` and `content/fr/guide.md` without updating `.metadata/`. In that case extract **adopts** the translation: it records the file as translated instead of re-queueing it. A changed page is adopted when its target also changed since it was recorded. A new page is adopted when its target already exists. In both cases the target must differ from the source and pass the write step's structural validation. Extract lists every adopted file. One case gets adopted wrongly: a PR that changes a source page and also makes an unrelated edit to its translation, such as a typo fix.
 
-When a source page is **deleted**, the next extract reconciles it automatically: it removes that page's translated copies from every language folder and prunes its `translated.json` / `hashes.json` / `target-hashes.json` entries, so removed pages don't leave orphaned translations behind. Files kept untranslated via `--exclude` are never affected (their source still exists), and this cleanup is skipped under `--force`.
+When a source page is **deleted**, the next extract reconciles it automatically: it removes that page's translated copies from every language folder and prunes its records, so removed pages don't leave orphaned translations behind. Files kept untranslated via `--exclude` are never affected (their source still exists).
 
 The `.metadata/` folder is a dot-folder, so Nuxt Content ignores it and per-locale collections (`source.include: '<locale>/**'`) never match it. Commit it to share incremental tracking, or `.gitignore` it.
 
-Upgrading from a version without `hashes.json`? On the first run, extract silently backfills hashes for files already in `translated.json` so existing translations aren't re-queued. `target-hashes.json` is backfilled the same way for every up-to-date translation. Until a page has a snapshot, a change to its source is always re-queued, never adopted.
+Upgrading from a version that kept `translated.json`, `translated-langs.json`, `hashes.json` and `target-hashes.json`? The next run migrates them to `translations.json` and deletes them. Existing translations aren't re-queued, except ones missing on disk.
 
 ## What's preserved during translation
 
